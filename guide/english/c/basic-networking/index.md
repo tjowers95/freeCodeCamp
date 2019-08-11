@@ -46,7 +46,7 @@ User-Datagram-Sockets are used for UDP connections. The User Datagram Protocol (
 Commonly used for a site or application offering a video streaming service, communication between machines in a companies network, is part of Google's QUIC protocol which will be a part of the new HTTP/3.
 
 #### Raw Sockets
-Here you have pure IP connections. This is primarily used for routers, and yes, routers also use sockets (in most cases).
+Here you have raw data from your device interfaces (see `ifconfig` / `ip address show`). This is the data that, normally, the device-drivers would hand to the kernel's IP Stack, instead, they go to you (with some caveats). It's hairy, but you could implement a user-land network stack using raw sockets. 
 
 
 #### Clients VS Servers
@@ -97,7 +97,7 @@ So now that we see there's different ways an address can be written -- one is a 
 #define AF_INET   2     // IPv4
 #define AF_INET6  4     // IPv6 
 // you'll sometimes see PF instead of AF, it stood for protocol families, literally the same as address families
-#define PF_UNSPEC AF_UNSPEC  // IPv4 of IPv6
+#define PF_UNSPEC AF_UNSPEC  // IPv4 or IPv6
 #define PF_INET   AF_INET    // IPv4
 #define PF_INET6  AF_INET6   // IPv6
 // I told you.. it's literally the same as address families, you'll see other explanations online that will use PF_INET and AF_INET and think to yourself "am I missing something? Just ignore it"
@@ -153,4 +153,50 @@ We need to get the IP addresses involved now... thought you could escape that?
 
 There are two possible ways we could continue:
 1. __Get the IP address of the machine we want to connect to, and continue as a client__ then call connect() after getting the remote-machine's address info (multiple ways to do this, don't worry yet) and our socket to connect our socket to a remote address.
+
 2. __Get an IP address on our own machine and wait for clients to connect to us, and continue as a server__ we need to call bind() after specifying one of the local addresses (more on local addresses in a second) this will let the Kernel know that we want all incoming connections on a certain local address from a certain port (more on ports in a second don't worry)
+
+Let's continue as a server. We'll do the client later. We need to bind(). Binding is the process of associating a socket with a local network device (interchangeably, a local network interface). 
+
+Most people know about localhost, on 127.0.0.1 (::1 ipv6 style), usually called "lo". This is a virtual network interface, and is only for connecting processes on the same machine. Commonly, 0.0.0.0 (::0) is the virtual interface used to bind() by network-servers such as Nginx and Apache - it represents "all interfaces", which will work for now, since we do not plan to poll NICs, save that for another day.
+
+Optionally, you might want to bind to a specific interface, the addresses of which can be found using `ifconfig` or `ip address show`. In fact, in order to have a functional IPv6 *and* IPv4 server, in Nginx, you must listen on a given interface's IPv4 and IPv6 equivalents separately - as separate servers. Otherwise, Nginx will bind to 0.0.0.0.
+
+We need to fill out a `struct sockaddr`:
+**BSD interface**
+```C
+struct sockaddr {
+  unsigned short   sa_family;  // Two bytes, representing AF_INET AF_UNSPEC or AF_INET6
+  char           sa_data[14];  // 14 bytes, representing our port number and IP address, the rest empty zeros
+};
+```
+**Winsock interface**
+```C
+struct sockaddr {
+  ushort   sa_family; // Exact same as BSD interface
+  char   sa_data[14]; // Exact same as BSD interface
+};
+```
+We need to convert the port we want to bind to, to big-endian, assuming we are on a little-endian system. The `htons()` function will make sure it's in network-byte-order, which is big-endian. We need to include <arpa/inet.h> for Linux, OSX, and BSD -- for Windows this function is already defined in <Winsock.h>.
+```C
+struct sockaddr adr;
+adr.sa_family = AF_INET;
+const unsigned short port = htons(80);
+adr.sa_data[0] = port & 0xff00;         // Take the first byte of 'port' and put it in the first byte of sa_data
+adr.sa_data[1] = port & 0x00ff;
+```
+*(More commonly sockaddr_in or sockaddr_in6 is used to fill up, then type casted to sockaddr, see Beej's Network Guides)*
+
+Now we need to put the IP address we want to bind to, being 0.0.0.0, this is a particularly easy case, need <string.h>
+```C
+#define PORT_OFF 2
+...
+memset(adr.sa_data + PORT_OFF, 0, 14 - PORT_OFF);   // PORT_OFF being the size of the data used to represent the port, being an unsigned short it's two bytes, with the next 4 bytes being the IPv4 address (which is 0.0.0.0) plus zeroing out the rest
+```
+But in the case that any other IP address is used we would use `inet_pton()`, which is defined in <arpa/inet.h> for Linux, OSX, and BSD but defined in <Ws2tcpip.h> for Windows
+```C
+#define PORT_OFF
+...
+inet_pton(AF_INET, "10.10.10.1", adr.sa_data + PORT_OFF);
+/* Optionally, you can zero out the remaining parts of the buffer, which were likely originally reserved for larger IP addresses or more meta-information being put in, otherwise they are useless bytes */
+```
